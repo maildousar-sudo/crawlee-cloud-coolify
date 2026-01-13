@@ -185,13 +185,33 @@ export const initCommand = new Command('init')
 
       // Extract files
       const entries = zip.getEntries();
+
+      // Detect if zip has a common top-level directory wrapper
+      const fileEntries = entries.filter((e) => !e.isDirectory);
+      const firstParts = fileEntries
+        .map((e) => e.entryName.split('/')[0])
+        .filter((p): p is string => !!p);
+      const uniqueFirstParts = [...new Set(firstParts)];
+      // If all files share same first path component and it's not a dotfile/known folder, strip it
+      const firstPart = uniqueFirstParts[0];
+      const hasTopLevelWrapper =
+        uniqueFirstParts.length === 1 &&
+        firstPart !== undefined &&
+        !firstPart.startsWith('.') &&
+        firstPart !== 'src' &&
+        !firstPart.includes('.');
+
       for (const entry of entries) {
         if (entry.isDirectory) continue;
 
-        // Remove the top-level directory from the path (e.g., "ts-crawlee-cheerio/")
         const entryPath = entry.entryName;
-        const pathParts = entryPath.split('/');
-        const relativePath = pathParts.slice(1).join('/');
+        let relativePath = entryPath;
+
+        // Only strip top-level directory if there's a wrapper folder
+        if (hasTopLevelWrapper) {
+          const pathParts = entryPath.split('/');
+          relativePath = pathParts.slice(1).join('/');
+        }
 
         if (!relativePath) continue;
 
