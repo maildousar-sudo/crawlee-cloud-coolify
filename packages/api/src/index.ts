@@ -13,6 +13,7 @@ import { keyValueStoresRoutes } from './routes/key-value-stores.js';
 import { requestQueuesRoutes } from './routes/request-queues.js';
 import { logsRoutes } from './routes/logs.js';
 import { registryRoutes } from './routes/registry.js';
+import { usersRoutes } from './routes/users.js';
 import { setupAdminUser } from './setup.js';
 
 const app = Fastify({
@@ -58,6 +59,7 @@ await app.register(keyValueStoresRoutes, { prefix: '/v2' });
 await app.register(requestQueuesRoutes, { prefix: '/v2' });
 await app.register(logsRoutes, { prefix: '/v2' });
 await app.register(registryRoutes, { prefix: '/v2' });
+await app.register(usersRoutes, { prefix: '/v2' });
 
 // Health check
 app.get('/health', () => ({

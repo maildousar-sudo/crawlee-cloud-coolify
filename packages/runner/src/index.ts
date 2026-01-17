@@ -1,6 +1,6 @@
 /**
  * Crawlee Platform Runner Service
- * 
+ *
  * This service:
  * 1. Polls for new Actor runs
  * 2. Spawns Docker containers with proper environment
@@ -17,11 +17,11 @@ async function main() {
   console.log('Crawlee Platform Runner');
   console.log('='.repeat(60));
   console.log(`API URL: ${config.apiBaseUrl}`);
-  console.log(`Max concurrent runs: ${config.maxConcurrentRuns}`);
-  console.log(`Default memory: ${config.defaultMemoryMb}MB`);
-  console.log(`Default timeout: ${config.defaultTimeoutSecs}s`);
+  console.log(`Max concurrent runs: ${String(config.maxConcurrentRuns)}`);
+  console.log(`Default memory: ${String(config.defaultMemoryMb)}MB`);
+  console.log(`Default timeout: ${String(config.defaultTimeoutSecs)}s`);
   console.log('='.repeat(60));
-  
+
   // Check Docker connectivity
   console.log('Checking Docker daemon...');
   const dockerOk = await checkDocker();
@@ -31,17 +31,17 @@ async function main() {
     process.exit(1);
   }
   console.log('Docker daemon connected');
-  
+
   // Show currently running containers
   const running = await listRunningContainers();
   if (running.length > 0) {
-    console.log(`Found ${running.length} running Actor containers`);
+    console.log(`Found ${String(running.length)} running Actor containers`);
   }
-  
+
   // Initialize job queue
   console.log('Initializing job queue...');
   await initJobQueue();
-  
+
   // Start processing runs
   console.log('Starting run processor...');
   await startProcessing();
@@ -58,7 +58,7 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('Runner failed:', err);
   process.exit(1);
 });
