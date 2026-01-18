@@ -1,6 +1,6 @@
 /**
  * Database schema for Crawlee Platform.
- * 
+ *
  * Uses short, human-friendly IDs (Apify-style) instead of UUIDs.
  * Run this migration with: npm run db:migrate
  */
@@ -202,8 +202,63 @@ CREATE INDEX IF NOT EXISTS idx_actor_builds_actor ON actor_builds(actor_id);
 
 -- Add foreign key for current_version_id in actors
 ALTER TABLE actors DROP CONSTRAINT IF EXISTS actors_current_version_id_fkey;
-ALTER TABLE actors ADD CONSTRAINT actors_current_version_id_fkey 
+ALTER TABLE actors ADD CONSTRAINT actors_current_version_id_fkey
   FOREIGN KEY (current_version_id) REFERENCES actor_versions(id);
+
+-- Schedules (cron jobs)
+CREATE TABLE IF NOT EXISTS schedules (
+  id VARCHAR(21) PRIMARY KEY,
+  user_id VARCHAR(21) REFERENCES users(id) ON DELETE CASCADE,
+  actor_id VARCHAR(21) NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  cron_expression TEXT NOT NULL,
+  timezone TEXT DEFAULT 'UTC',
+  is_enabled BOOLEAN DEFAULT TRUE,
+  input JSONB,
+  last_run_at TIMESTAMPTZ,
+  next_run_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  modified_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_user ON schedules(user_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(is_enabled) WHERE is_enabled = true;
+
+-- Webhook deliveries (tracking + retry)
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id VARCHAR(21) PRIMARY KEY,
+  webhook_id VARCHAR(21) NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  run_id VARCHAR(21),
+  event_type TEXT NOT NULL,
+  status TEXT DEFAULT 'PENDING',
+  attempt_count INTEGER DEFAULT 0,
+  max_attempts INTEGER DEFAULT 5,
+  next_retry_at TIMESTAMPTZ,
+  response_status INTEGER,
+  response_body TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending
+  ON webhook_deliveries(next_retry_at) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
+  ON webhook_deliveries(webhook_id);
+
+-- Add columns to webhooks table
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS actor_id VARCHAR(21) REFERENCES actors(id) ON DELETE SET NULL;
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS headers JSONB;
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS modified_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Add retry columns to actors table
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 0;
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS retry_delay_secs INTEGER DEFAULT 60;
+
+-- Add retry/scheduling columns to runs table
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS origin_run_id VARCHAR(21);
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ;
 `;
 
 export async function migrate(): Promise<void> {
@@ -214,10 +269,10 @@ export async function migrate(): Promise<void> {
 
 // Run migration if called directly
 if (process.argv[1]?.endsWith('migrate.ts') || process.argv[1]?.endsWith('migrate.js')) {
-  import('./index.js').then(({ initDatabase }) => 
-    initDatabase().then(() => migrate().then(() => process.exit(0)))
-  ).catch(err => {
-    console.error('Migration failed:', err);
-    process.exit(1);
-  });
+  import('./index.js')
+    .then(({ initDatabase }) => initDatabase().then(() => migrate().then(() => process.exit(0))))
+    .catch((err) => {
+      console.error('Migration failed:', err);
+      process.exit(1);
+    });
 }
