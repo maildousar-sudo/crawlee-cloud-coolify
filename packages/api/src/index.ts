@@ -1,7 +1,9 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { ZodError } from 'zod';
 import compress from '@fastify/compress';
 import { config } from './config.js';
+import { enforceSecurityConfig } from './config-validator.js';
 import { initDatabase } from './db/index.js';
 import { initS3 } from './storage/s3.js';
 import { initRedis } from './storage/redis.js';
@@ -14,7 +16,11 @@ import { requestQueuesRoutes } from './routes/request-queues.js';
 import { logsRoutes } from './routes/logs.js';
 import { registryRoutes } from './routes/registry.js';
 import { usersRoutes } from './routes/users.js';
+import { webhooksRoutes } from './routes/webhooks.js';
 import { setupAdminUser } from './setup.js';
+
+// Validate security configuration at startup
+enforceSecurityConfig();
 
 const app = Fastify({
   logger: { level: config.logLevel },
@@ -22,7 +28,24 @@ const app = Fastify({
   bodyLimit: 10 * 1024 * 1024,
 });
 
-await app.register(cors, { origin: true });
+// CORS restricted to configured origins
+const allowedOrigins = config.corsOrigins
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+await app.register(cors, {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (same-origin, curl, etc.)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Origin ${origin} not allowed by CORS`), false);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+});
 
 // Enable compression/decompression (handles gzip request bodies from SDK)
 await app.register(compress, { global: true });
@@ -48,6 +71,33 @@ app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_re
   done(null, body);
 });
 
+// Global Error Handler
+app.setErrorHandler((error: any, request, reply) => {
+  if (error instanceof ZodError) {
+    return reply.status(400).send({
+      error: {
+        type: 'validation_error',
+        message: 'Validation failed',
+        details: error.errors,
+      },
+    });
+  }
+
+  // Default error handler fallback
+  // If status code is 4xx, just send it, otherwise log it
+  if (!error.statusCode || error.statusCode >= 500) {
+    request.log.error(error);
+  }
+
+  const statusCode = error.statusCode || 500;
+  reply.status(statusCode).send({
+    error: {
+      type: error.name,
+      message: error.message,
+    },
+  });
+});
+
 // Register routes
 await authRoutes(app);
 
@@ -60,6 +110,7 @@ await app.register(requestQueuesRoutes, { prefix: '/v2' });
 await app.register(logsRoutes, { prefix: '/v2' });
 await app.register(registryRoutes, { prefix: '/v2' });
 await app.register(usersRoutes, { prefix: '/v2' });
+await app.register(webhooksRoutes, { prefix: '/v2' });
 
 // Health check
 app.get('/health', () => ({
