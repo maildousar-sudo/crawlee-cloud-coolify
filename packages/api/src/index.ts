@@ -17,6 +17,7 @@ import { logsRoutes } from './routes/logs.js';
 import { registryRoutes } from './routes/registry.js';
 import { usersRoutes } from './routes/users.js';
 import { webhooksRoutes } from './routes/webhooks.js';
+import { schedulesRoutes } from './routes/schedules.js';
 import { setupAdminUser } from './setup.js';
 
 // Validate security configuration at startup
@@ -111,6 +112,7 @@ await app.register(logsRoutes, { prefix: '/v2' });
 await app.register(registryRoutes, { prefix: '/v2' });
 await app.register(usersRoutes, { prefix: '/v2' });
 await app.register(webhooksRoutes, { prefix: '/v2' });
+await app.register(schedulesRoutes, { prefix: '/v2' });
 
 // Health check
 app.get('/health', () => ({
