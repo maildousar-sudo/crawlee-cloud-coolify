@@ -21,6 +21,9 @@ interface RunJob {
   default_request_queue_id: string;
   timeout_secs: number;
   memory_mbytes: number;
+  retry_count: number;
+  origin_run_id: string | null;
+  run_after: Date | null;
 }
 
 interface ActorRow {
@@ -92,11 +95,11 @@ async function processNextRun(): Promise<void> {
   isProcessing = true;
 
   try {
-    // Get next pending run (FIFO)
+    // Get next pending run (FIFO), respecting delayed retries
     const result = await pool.query<RunJob>(`
-      SELECT * FROM runs 
-      WHERE status = 'READY' 
-      ORDER BY created_at ASC 
+      SELECT * FROM runs
+      WHERE status = 'READY' AND (run_after IS NULL OR run_after <= NOW())
+      ORDER BY created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     `);
@@ -204,6 +207,10 @@ async function processRun(run: RunJob): Promise<void> {
 
     // Trigger webhooks
     await triggerWebhooks(runId, status);
+
+    if (status === 'FAILED') {
+      await maybeRetryRun(run, runId);
+    }
   } catch (err) {
     console.error(`Run ${runId} failed with error:`, err);
 
@@ -217,6 +224,7 @@ async function processRun(run: RunJob): Promise<void> {
     );
 
     await triggerWebhooks(runId, 'FAILED');
+    await maybeRetryRun(run, runId);
   }
 }
 
@@ -260,6 +268,55 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
 
     // Attempt immediate delivery
     await attemptWebhookDelivery(deliveryId, webhook, run, eventType);
+  }
+}
+
+/**
+ * Schedule a retry run if the actor's retry policy allows it.
+ */
+async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
+  try {
+    const actorResult = await pool.query<{
+      max_retries: number;
+      retry_delay_secs: number;
+    }>('SELECT max_retries, retry_delay_secs FROM actors WHERE id = $1', [run.actor_id]);
+
+    const actor = actorResult.rows[0];
+    if (!actor || actor.max_retries <= 0) return;
+    if (run.retry_count >= actor.max_retries) return;
+
+    const newRunId = nanoid();
+    const originRunId = run.origin_run_id ?? runId;
+    const newRetryCount = run.retry_count + 1;
+
+    console.log(
+      `Scheduling retry ${newRetryCount}/${actor.max_retries} for run ${runId} as ${newRunId}`
+    );
+
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
+        default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after)
+       VALUES ($1, $2, (SELECT user_id FROM runs WHERE id = $3), 'READY',
+        $4, $5, $6, $7, $8, $9, $10,
+        NOW() + INTERVAL '1 second' * $11)`,
+      [
+        newRunId,
+        run.actor_id,
+        runId,
+        run.default_dataset_id,
+        run.default_key_value_store_id,
+        run.default_request_queue_id,
+        run.timeout_secs,
+        run.memory_mbytes,
+        newRetryCount,
+        originRunId,
+        actor.retry_delay_secs,
+      ]
+    );
+
+    await redis.publish('run:new', newRunId);
+  } catch (err) {
+    console.error(`Failed to schedule retry for run ${runId}:`, err);
   }
 }
 

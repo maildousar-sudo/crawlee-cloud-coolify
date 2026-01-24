@@ -4,8 +4,10 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
+import { CreateActorSchema, UpdateActorSchema, ActorRunSchema } from '../schemas/actors.js';
 import { query } from '../db/index.js';
 import { redis } from '../storage/redis.js';
+import { authenticate } from '../auth/middleware.js';
 
 interface ActorRow {
   id: string;
@@ -14,16 +16,23 @@ interface ActorRow {
   title: string | null;
   description: string | null;
   default_run_options: Record<string, unknown> | null;
+  max_retries: number;
+  retry_delay_secs: number;
   created_at: Date;
   modified_at: Date;
 }
 
 export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
-   * GET /v2/acts - List actors
+   * GET /v2/acts - List actors (filtered by user)
    */
-  fastify.get('/acts', async () => {
-    const result = await query<ActorRow>('SELECT * FROM actors ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/acts', async (request) => {
+    const result = await query<ActorRow>(
+      'SELECT * FROM actors WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+      [request.user!.id]
+    );
 
     return {
       data: {
@@ -45,20 +54,27 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       title?: string;
       description?: string;
       defaultRunOptions?: Record<string, unknown>;
+      maxRetries?: number;
+      retryDelaySecs?: number;
     };
   }>('/acts', async (request, reply) => {
-    const { name, title, description, defaultRunOptions } = request.body;
+    const { name, title, description, defaultRunOptions, maxRetries, retryDelaySecs } =
+      CreateActorSchema.parse(request.body);
 
-    // Check if actor with this name already exists
-    const existing = await query<ActorRow>('SELECT * FROM actors WHERE name = $1', [name]);
+    // Check if actor with this name already exists for this user
+    const existing = await query<ActorRow>(
+      'SELECT * FROM actors WHERE name = $1 AND user_id = $2',
+      [name, request.user!.id]
+    );
 
     if (existing.rows[0]) {
-      // Update existing actor
+      // Update existing actor (user_id already verified in SELECT)
       const result = await query<ActorRow>(
         `
-        UPDATE actors 
-        SET title = $1, description = $2, default_run_options = $3, modified_at = NOW()
-        WHERE name = $4
+        UPDATE actors
+        SET title = $1, description = $2, default_run_options = $3,
+            max_retries = $4, retry_delay_secs = $5, modified_at = NOW()
+        WHERE name = $6 AND user_id = $7
         RETURNING *
       `,
         [
@@ -67,27 +83,33 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
           defaultRunOptions
             ? JSON.stringify(defaultRunOptions)
             : existing.rows[0].default_run_options,
+          maxRetries ?? existing.rows[0].max_retries,
+          retryDelaySecs ?? existing.rows[0].retry_delay_secs,
           name,
+          request.user!.id,
         ]
       );
 
       return { data: formatActor(result.rows[0]!) };
     }
 
-    // Create new actor
+    // Create new actor with user ownership
     const id = nanoid();
     const result = await query<ActorRow>(
       `
-      INSERT INTO actors (id, name, title, description, default_run_options)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `,
       [
         id,
         name,
+        request.user!.id,
         title ?? null,
         description ?? null,
         defaultRunOptions ? JSON.stringify(defaultRunOptions) : null,
+        maxRetries ?? 0,
+        retryDelaySecs ?? 60,
       ]
     );
 
@@ -96,15 +118,16 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /**
-   * GET /v2/acts/:actorId - Get actor
+   * GET /v2/acts/:actorId - Get actor (user-scoped)
    */
   fastify.get<{ Params: { actorId: string } }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
 
-    // Get actor by ID or name
-    const result = await query<ActorRow>(`SELECT * FROM actors WHERE id = $1 OR name = $1`, [
-      actorId,
-    ]);
+    // Get actor by ID or name, scoped to user
+    const result = await query<ActorRow>(
+      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+      [actorId, request.user!.id]
+    );
 
     if (!result.rows[0]) {
       reply.status(404);
@@ -126,7 +149,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     };
   }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
-    const updates = request.body;
+    const updates = UpdateActorSchema.parse(request.body);
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
@@ -147,13 +170,15 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
 
     values.push(actorId);
 
+    // Add user_id filter for authorization
+    const userIdParam = paramIndex + 1;
     const result = await query<ActorRow>(
       `
       UPDATE actors SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex} OR name = $${paramIndex}
+      WHERE (id = $${paramIndex} OR name = $${paramIndex}) AND user_id = $${userIdParam}
       RETURNING *
     `,
-      [...values, actorId]
+      [...values, actorId, request.user!.id]
     );
 
     if (!result.rows[0]) {
@@ -165,11 +190,18 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /**
-   * DELETE /v2/acts/:actorId - Delete actor
+   * DELETE /v2/acts/:actorId - Delete actor (user-scoped)
    */
   fastify.delete<{ Params: { actorId: string } }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
-    await query(`DELETE FROM actors WHERE id = $1 OR name = $1`, [actorId]);
+    const result = await query(
+      `DELETE FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2 RETURNING id`,
+      [actorId, request.user!.id]
+    );
+    if (result.rowCount === 0) {
+      reply.status(404);
+      return { error: { message: 'Actor not found' } };
+    }
     reply.status(204);
   });
 
@@ -186,12 +218,18 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     };
   }>('/acts/:actorId/runs', async (request, reply) => {
     const { actorId } = request.params;
-    const { input, timeout = 3600, memory = 1024, envVars } = request.body || {};
+    const {
+      input,
+      timeout = 3600,
+      memory = 1024,
+      envVars,
+    } = ActorRunSchema.parse(request.body || {});
 
-    // Get actor by ID or name
-    const actor = await query<ActorRow>(`SELECT * FROM actors WHERE id = $1 OR name = $1`, [
-      actorId,
-    ]);
+    // Get actor by ID or name, scoped to user
+    const actor = await query<ActorRow>(
+      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+      [actorId, request.user!.id]
+    );
 
     if (!actor.rows[0]) {
       reply.status(404);
@@ -204,15 +242,25 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const requestQueueId = nanoid();
     const runId = nanoid();
 
-    await query('INSERT INTO datasets (id) VALUES ($1)', [datasetId]);
-    await query('INSERT INTO key_value_stores (id) VALUES ($1)', [kvStoreId]);
-    await query('INSERT INTO request_queues (id) VALUES ($1)', [requestQueueId]);
+    // Create storages with user ownership
+    await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
+      datasetId,
+      request.user!.id,
+    ]);
+    await query('INSERT INTO key_value_stores (id, user_id) VALUES ($1, $2)', [
+      kvStoreId,
+      request.user!.id,
+    ]);
+    await query('INSERT INTO request_queues (id, user_id) VALUES ($1, $2)', [
+      requestQueueId,
+      request.user!.id,
+    ]);
 
     // Always store input in the KV store (empty object if not provided)
     const { putKVRecord } = await import('../storage/s3.js');
     await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(input ?? {}), 'application/json');
 
-    // Create run record with READY status so Runner picks it up
+    // Create run record with READY status so Runner picks it up (with user ownership)
     const result = await query<{
       id: string;
       actor_id: string;
@@ -226,11 +274,20 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       created_at: Date;
     }>(
       `
-      INSERT INTO runs (id, actor_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
-      VALUES ($1, $2, 'READY', $3, $4, $5, $6, $7)
+      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
+      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8)
       RETURNING *
     `,
-      [runId, actor.rows[0].id, datasetId, kvStoreId, requestQueueId, timeout, memory]
+      [
+        runId,
+        actor.rows[0].id,
+        request.user!.id,
+        datasetId,
+        kvStoreId,
+        requestQueueId,
+        timeout,
+        memory,
+      ]
     );
 
     // Store runtime env vars in Redis if provided
@@ -280,6 +337,8 @@ function formatActor(row: ActorRow) {
     title: row.title,
     description: row.description,
     defaultRunOptions: row.default_run_options,
+    maxRetries: row.max_retries,
+    retryDelaySecs: row.retry_delay_secs,
     createdAt: row.created_at,
     modifiedAt: row.modified_at,
   };
