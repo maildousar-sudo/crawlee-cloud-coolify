@@ -19,6 +19,7 @@ import { usersRoutes } from './routes/users.js';
 import { webhooksRoutes } from './routes/webhooks.js';
 import { schedulesRoutes } from './routes/schedules.js';
 import { setupAdminUser } from './setup.js';
+import { initScheduler } from './scheduler.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -132,6 +133,9 @@ async function start() {
 
   // Setup admin user from env vars
   await setupAdminUser();
+
+  // Start cron scheduler
+  await initScheduler();
 
   await app.listen({ port: config.port, host: '0.0.0.0' });
   console.log(`Server on http://0.0.0.0:${String(config.port)}`);

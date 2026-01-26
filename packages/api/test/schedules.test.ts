@@ -29,6 +29,11 @@ vi.mock('../src/storage/redis.js', () => ({
   },
 }));
 
+vi.mock('../src/scheduler.js', () => ({
+  reloadSchedule: vi.fn(),
+  unregisterSchedule: vi.fn(),
+}));
+
 const createScheduleRow = (overrides = {}) => ({
   id: 'schedule-1',
   user_id: 'test-user-id',

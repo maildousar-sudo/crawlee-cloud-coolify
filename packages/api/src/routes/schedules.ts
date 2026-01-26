@@ -7,6 +7,7 @@ import { nanoid } from 'nanoid';
 import { CreateScheduleSchema, UpdateScheduleSchema } from '../schemas/schedules.js';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
+import { reloadSchedule, unregisterSchedule } from '../scheduler.js';
 
 interface ScheduleRow {
   id: string;
@@ -70,6 +71,8 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
         data.input ? JSON.stringify(data.input) : null,
       ]
     );
+
+    await reloadSchedule(id);
 
     reply.status(201);
     return { data: formatSchedule(result.rows[0]!) };
@@ -194,6 +197,8 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { message: 'Schedule not found' } };
     }
 
+    await reloadSchedule(request.params.scheduleId);
+
     return { data: formatSchedule(result.rows[0]) };
   });
 
@@ -213,6 +218,8 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
         reply.status(404);
         return { error: { message: 'Schedule not found' } };
       }
+
+      unregisterSchedule(request.params.scheduleId);
 
       reply.status(204);
     }
