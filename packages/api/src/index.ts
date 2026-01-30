@@ -20,6 +20,7 @@ import { webhooksRoutes } from './routes/webhooks.js';
 import { schedulesRoutes } from './routes/schedules.js';
 import { setupAdminUser } from './setup.js';
 import { initScheduler } from './scheduler.js';
+import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -100,6 +101,28 @@ app.setErrorHandler((error: any, request, reply) => {
   });
 });
 
+// Metrics collection hooks
+app.addHook('onRequest', (request, _reply, done) => {
+  (request as any).__startTime = process.hrtime.bigint();
+  done();
+});
+
+app.addHook('onResponse', (request, reply, done) => {
+  const startTime = (request as any).__startTime as bigint | undefined;
+  const route = request.routeOptions?.url ?? request.url;
+  const method = request.method;
+  const statusCode = String(reply.statusCode);
+
+  httpRequestsTotal.inc({ method, route, status_code: statusCode });
+
+  if (startTime) {
+    const duration = Number(process.hrtime.bigint() - startTime) / 1e9;
+    httpRequestDuration.observe({ method, route }, duration);
+  }
+
+  done();
+});
+
 // Register routes
 await authRoutes(app);
 
@@ -120,6 +143,12 @@ app.get('/health', () => ({
   status: 'ok',
   version: process.env.npm_package_version ?? '1.0.0',
 }));
+
+// Prometheus metrics endpoint
+app.get('/metrics', async (_request, reply) => {
+  reply.header('Content-Type', registry.contentType);
+  return registry.metrics();
+});
 
 async function start() {
   // Initialize database connection first
