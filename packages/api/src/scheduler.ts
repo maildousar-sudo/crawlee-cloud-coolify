@@ -135,6 +135,17 @@ export async function reloadSchedule(scheduleId: string): Promise<void> {
 }
 
 /**
+ * Unregister (stop) all scheduled cron jobs.
+ * Used during graceful shutdown.
+ */
+export function unregisterAllSchedules(): void {
+  for (const [id, task] of activeJobs) {
+    void task.stop();
+    activeJobs.delete(id);
+  }
+}
+
+/**
  * Get count of active cron jobs (for health checks).
  */
 export function getActiveScheduleCount(): number {

@@ -21,6 +21,7 @@ import { schedulesRoutes } from './routes/schedules.js';
 import { setupAdminUser } from './setup.js';
 import { initScheduler } from './scheduler.js';
 import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
+import { registerHealthRoutes } from './health.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -138,7 +139,10 @@ await app.register(usersRoutes, { prefix: '/v2' });
 await app.register(webhooksRoutes, { prefix: '/v2' });
 await app.register(schedulesRoutes, { prefix: '/v2' });
 
-// Health check
+// Health check routes (liveness + readiness)
+registerHealthRoutes(app);
+
+// Legacy health check
 app.get('/health', () => ({
   status: 'ok',
   version: process.env.npm_package_version ?? '1.0.0',
@@ -170,5 +174,52 @@ async function start() {
   console.log(`Server on http://0.0.0.0:${String(config.port)}`);
 }
 
+function setupGracefulShutdown(): void {
+  const shutdownTimeoutSecs = parseInt(process.env.SHUTDOWN_TIMEOUT_SECS ?? '60', 10);
+  let shuttingDown = false;
+
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(
+      `Received ${signal}, shutting down gracefully (timeout: ${String(shutdownTimeoutSecs)}s)...`
+    );
+
+    const forceExit = setTimeout(() => {
+      console.error('Shutdown timeout exceeded, forcing exit');
+      process.exit(1);
+    }, shutdownTimeoutSecs * 1000);
+
+    try {
+      // 1. Stop scheduler
+      const { unregisterAllSchedules } = await import('./scheduler.js');
+      unregisterAllSchedules();
+
+      // 2. Close HTTP server (drain in-flight requests)
+      await app.close();
+
+      // 3. Close Redis
+      const { redis: redisClient } = await import('./storage/redis.js');
+      await redisClient.quit();
+
+      // 4. Close database pool
+      const { pool: dbPool } = await import('./db/index.js');
+      await dbPool.end();
+
+      console.log('Graceful shutdown complete');
+      clearTimeout(forceExit);
+      process.exit(0);
+    } catch (err) {
+      console.error('Error during shutdown:', err);
+      clearTimeout(forceExit);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+}
+
+setupGracefulShutdown();
 void start();
 export { app };
