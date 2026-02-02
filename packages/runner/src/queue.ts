@@ -39,6 +39,15 @@ let pool: pg.Pool;
 let redis: Redis;
 let isProcessing = false;
 let activeRuns = 0;
+let shuttingDown = false;
+
+export function stopProcessing(): void {
+  shuttingDown = true;
+}
+
+export function getActiveRunCount(): number {
+  return activeRuns;
+}
 
 /**
  * Initialize job queue connections.
@@ -70,17 +79,15 @@ export async function startProcessing(): Promise<void> {
 
   // Start webhook retry processor (every 10 seconds)
   void (async () => {
-    while (true) {
+    while (!shuttingDown) {
       await processWebhookRetries();
       await sleep(10_000);
     }
   })();
 
-  // Process any pending runs on startup
-
-  while (true) {
+  while (!shuttingDown) {
     await processNextRun();
-    await sleep(1000); // Check every second
+    await sleep(1000);
   }
 }
 
@@ -88,7 +95,7 @@ export async function startProcessing(): Promise<void> {
  * Process the next pending run.
  */
 async function processNextRun(): Promise<void> {
-  if (isProcessing || activeRuns >= config.maxConcurrentRuns) {
+  if (shuttingDown || isProcessing || activeRuns >= config.maxConcurrentRuns) {
     return;
   }
 

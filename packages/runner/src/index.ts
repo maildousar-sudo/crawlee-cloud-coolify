@@ -10,7 +10,7 @@
 
 import { config } from './config.js';
 import { checkDocker, listRunningContainers } from './docker.js';
-import { initJobQueue, startProcessing } from './queue.js';
+import { initJobQueue, startProcessing, stopProcessing, getActiveRunCount } from './queue.js';
 
 async function main() {
   console.log('='.repeat(60));
@@ -47,17 +47,40 @@ async function main() {
   await startProcessing();
 }
 
-// Handle shutdown gracefully
-process.on('SIGTERM', () => {
-  console.log('Received SIGTERM, shutting down...');
-  process.exit(0);
-});
+function setupGracefulShutdown(): void {
+  const shutdownTimeoutSecs = parseInt(process.env.SHUTDOWN_TIMEOUT_SECS ?? '60', 10);
+  let shuttingDown = false;
 
-process.on('SIGINT', () => {
-  console.log('Received SIGINT, shutting down...');
-  process.exit(0);
-});
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}, stopping run processor...`);
 
+    stopProcessing();
+
+    const forceExit = setTimeout(() => {
+      const active = getActiveRunCount();
+      console.error(`Shutdown timeout exceeded with ${String(active)} active runs, forcing exit`);
+      process.exit(1);
+    }, shutdownTimeoutSecs * 1000);
+
+    const checkInterval = setInterval(() => {
+      const active = getActiveRunCount();
+      if (active === 0) {
+        clearInterval(checkInterval);
+        clearTimeout(forceExit);
+        console.log('All runs completed, exiting');
+        process.exit(0);
+      }
+      console.log(`Waiting for ${String(active)} active run(s) to finish...`);
+    }, 2000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+setupGracefulShutdown();
 main().catch((err: unknown) => {
   console.error('Runner failed:', err);
   process.exit(1);
