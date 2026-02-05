@@ -103,6 +103,8 @@ const skipRoutePrefixes = [
   '/actor-runs/:runId/logs/stream',
   '/webhooks',
   '/schedules',
+  '/health',
+  '/metrics',
 ];
 for (const route of extractRoutes()) {
   const path = route.split(' ')[1];
