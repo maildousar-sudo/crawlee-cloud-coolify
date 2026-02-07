@@ -23,26 +23,26 @@ Priority: Make the CLI the best way to work with Crawlee Cloud.
 - [ ] **Input schema validation** - Validate inputs before running
 - [ ] **Better error messages** - Actionable hints for common issues
 
-## v0.3.0 - Production Scraping at Scale
+## v0.3.0 - Production Scraping at Scale ✅
 
 Priority: Run large scraping jobs reliably.
 
-- [ ] **Cron scheduling** - Schedule runs with cron expressions
-- [ ] **Retry policies** - Automatic retries with configurable backoff
-- [ ] **Run timeouts** - Kill stuck runs automatically
-- [ ] **Webhooks** - HTTP callbacks on run completion
-- [ ] **Multi-worker runners** - Scale horizontally for parallel execution
-- [ ] **Resource limits** - Memory/CPU caps per run
+- [x] **Cron scheduling** - Schedule runs with cron expressions
+- [x] **Retry policies** - Automatic retries with configurable backoff
+- [x] **Run timeouts** - Kill stuck runs automatically
+- [x] **Webhooks** - HTTP callbacks on run completion with delivery tracking and exponential backoff retry
+- [x] **Multi-worker runners** - Scale horizontally for parallel execution
+- [x] **Resource limits** - Memory/CPU caps per run
 
-## v0.4.0 - Reliability & Operations
+## v0.4.0 - Reliability & Operations ✅
 
 Priority: Production-grade stability.
 
-- [ ] **Metrics & monitoring** - Prometheus endpoints
-- [ ] **Health checks** - API and runner health monitoring
-- [ ] **Graceful shutdown** - Complete in-flight runs before stopping
-- [ ] **Run history retention** - Auto-cleanup old runs and data
-- [ ] **Backup & restore** - Database backup utilities
+- [x] **Metrics & monitoring** - Prometheus endpoints (`GET /metrics` with prom-client)
+- [x] **Health checks** - Liveness (`/health/live`) and readiness (`/health/ready`) probes with DB, Redis, S3 checks
+- [x] **Graceful shutdown** - API server drains requests, runner waits for active containers (configurable timeout)
+- [x] **Run history retention** - CLI cleanup script with `--dry-run`, S3 + DB cleanup
+- [x] **Backup & restore** - `pg_dump`/`pg_restore` wrapper scripts
 
 ## v0.5.0 - Polish
 
