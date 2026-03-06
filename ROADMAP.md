@@ -2,7 +2,7 @@
 
 A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
-## Current Version: v0.1.0 ✅
+## Current Version: v0.5.0 ✅
 
 - Apify-compatible REST API
 - Docker-based Actor execution
@@ -44,13 +44,21 @@ Priority: Production-grade stability.
 - [x] **Run history retention** - CLI cleanup script with `--dry-run`, S3 + DB cleanup
 - [x] **Backup & restore** - `pg_dump`/`pg_restore` wrapper scripts
 
-## v0.5.0 - Polish
+## v0.5.0 - Security & Polish ✅
+
+Priority: Secure the platform and prepare for wider use.
 
 - [x] **One-click cloud deploy** - Deploy buttons for Railway, Render, DigitalOcean + VPS script with Caddy auto-HTTPS
-- [ ] **Actor versioning** - Deploy and rollback specific versions
-- [ ] **API key scopes** - Read-only vs full access keys
-- [ ] **Improved dashboard** - Better UX for those who prefer UI
-- [ ] **Documentation improvements**
+- [x] **Authentication middleware** - All API routes require authentication via preHandler hook
+- [x] **User-scoped resources** - Datasets, KV stores, request queues, and actors are scoped per user
+- [x] **Input validation** - Zod schemas for all route inputs (datasets, KV stores, request queues, runs)
+- [x] **SSRF protection** - Block webhook delivery to private/internal network addresses (RFC 1918, loopback, link-local)
+- [x] **Runner API key from Redis** - Runner fetches API key from Redis instead of static config
+- [x] **Security config validation** - Startup checks for weak secrets, insecure DB/S3 credentials, CORS
+- [ ] Actor versioning - Deploy and rollback specific versions
+- [ ] API key scopes - Read-only vs full access keys
+- [ ] Improved dashboard - Better UX for those who prefer UI
+- [ ] Documentation improvements
 
 ---
 
