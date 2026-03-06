@@ -3,7 +3,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
+
+// Mock authenticate middleware BEFORE importing routes
+vi.mock('../src/auth/middleware.js', () => ({
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+}));
+
 import { datasetsRoutes } from '../src/routes/datasets.js';
 
 const mockQuery = vi.fn();
@@ -41,8 +50,24 @@ describe('Dataset Routes', () => {
     it('should list datasets', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { id: 'ds-1', name: 'test-dataset', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 10 },
-          { id: 'ds-2', name: null, user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 5 },
+          {
+            id: 'ds-1',
+            name: 'test-dataset',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+            item_count: 10,
+          },
+          {
+            id: 'ds-2',
+            name: null,
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+            item_count: 5,
+          },
         ],
       });
 
@@ -62,7 +87,17 @@ describe('Dataset Routes', () => {
     it('should get dataset by id', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [{ id: 'ds-1', name: 'test', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 10 }],
+          rows: [
+            {
+              id: 'ds-1',
+              name: 'test',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+              item_count: 10,
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] }); // accessed_at update
 
@@ -104,7 +139,17 @@ describe('Dataset Routes', () => {
   describe('GET /v2/datasets/:datasetId/items', () => {
     it('should list dataset items with pagination', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'ds-1', name: 'test', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 100 }],
+        rows: [
+          {
+            id: 'ds-1',
+            name: 'test',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+            item_count: 100,
+          },
+        ],
       });
       mockListDatasetItems.mockResolvedValueOnce({
         items: [{ url: 'https://example.com', title: 'Test' }],
@@ -127,7 +172,17 @@ describe('Dataset Routes', () => {
     it('should push single item', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [{ id: 'ds-1', name: 'test', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 0 }],
+          rows: [
+            {
+              id: 'ds-1',
+              name: 'test',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+              item_count: 0,
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] }); // count update
 
@@ -146,7 +201,17 @@ describe('Dataset Routes', () => {
     it('should push array of items', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [{ id: 'ds-1', name: 'test', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 0 }],
+          rows: [
+            {
+              id: 'ds-1',
+              name: 'test',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+              item_count: 0,
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -171,7 +236,17 @@ describe('Dataset Routes', () => {
         .mockResolvedValueOnce({ rows: [] }) // dataset not found
         .mockResolvedValueOnce({ rows: [] }) // insert
         .mockResolvedValueOnce({
-          rows: [{ id: 'new-ds', name: 'new-dataset', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date(), item_count: 0 }],
+          rows: [
+            {
+              id: 'new-ds',
+              name: 'new-dataset',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+              item_count: 0,
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] }); // count update
 

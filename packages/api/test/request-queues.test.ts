@@ -3,7 +3,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
+
+// Mock authenticate middleware BEFORE importing routes
+vi.mock('../src/auth/middleware.js', () => ({
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+}));
+
 import { requestQueuesRoutes } from '../src/routes/request-queues.js';
 
 const mockQuery = vi.fn();

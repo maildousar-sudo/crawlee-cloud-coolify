@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
 import { authRoutes } from '../src/routes/auth.js';
 
 const mockPoolQuery = vi.fn();
@@ -22,8 +23,8 @@ vi.mock('../src/auth/index.js', () => ({
 }));
 
 vi.mock('../src/auth/middleware.js', () => ({
-  authenticate: async (request: { user?: { id: string; email: string } }) => {
-    request.user = { id: 'user-1', email: 'test@example.com' };
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'user-1', email: 'test@example.com', role: 'user' };
   },
 }));
 
@@ -44,7 +45,10 @@ describe('Auth Routes', () => {
     mockPoolQuery.mockReset();
   });
 
-  describe('POST /v2/auth/register', () => {
+  // NOTE: Registration endpoint is intentionally disabled in auth.ts
+  // Admin users are created from env vars on startup (see setup.ts)
+  // These tests are skipped until user invitation feature is implemented
+  describe.skip('POST /v2/auth/register (disabled)', () => {
     it('should register new user', async () => {
       mockPoolQuery
         .mockResolvedValueOnce({ rows: [] }) // no existing user
@@ -67,8 +71,8 @@ describe('Auth Routes', () => {
     });
 
     it('should reject existing email', async () => {
-      mockPoolQuery.mockResolvedValueOnce({ 
-        rows: [{ id: 'existing-user' }] 
+      mockPoolQuery.mockResolvedValueOnce({
+        rows: [{ id: 'existing-user' }],
       });
 
       const response = await app.inject({
@@ -87,13 +91,15 @@ describe('Auth Routes', () => {
   describe('POST /v2/auth/login', () => {
     it('should login user', async () => {
       mockPoolQuery.mockResolvedValueOnce({
-        rows: [{
-          id: 'user-1',
-          email: 'test@example.com',
-          password_hash: 'hashed',
-          name: 'Test User',
-          role: 'user',
-        }],
+        rows: [
+          {
+            id: 'user-1',
+            email: 'test@example.com',
+            password_hash: 'hashed',
+            name: 'Test User',
+            role: 'user',
+          },
+        ],
       });
 
       const response = await app.inject({
@@ -129,13 +135,15 @@ describe('Auth Routes', () => {
   describe('GET /v2/auth/me', () => {
     it('should get current user', async () => {
       mockPoolQuery.mockResolvedValueOnce({
-        rows: [{
-          id: 'user-1',
-          email: 'test@example.com',
-          name: 'Test User',
-          role: 'user',
-          created_at: new Date(),
-        }],
+        rows: [
+          {
+            id: 'user-1',
+            email: 'test@example.com',
+            name: 'Test User',
+            role: 'user',
+            created_at: new Date(),
+          },
+        ],
       });
 
       const response = await app.inject({

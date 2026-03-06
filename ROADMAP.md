@@ -16,12 +16,12 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 
 Priority: Make the CLI the best way to work with Crawlee Cloud.
 
-- [ ] **Improved CLI output** - Better formatting, colors, progress bars
-- [ ] **`crc init`** - Scaffold new Actor projects from templates
-- [ ] **`crc dev`** - Local development mode with hot reload
-- [ ] **`crc status`** - Check run status and resource usage
-- [ ] **Input schema validation** - Validate inputs before running
-- [ ] **Better error messages** - Actionable hints for common issues
+- [x] **Improved CLI output** - Better formatting, colors, progress bars
+- [x] **`crc init`** - Scaffold new Actor projects from templates
+- [x] **`crc dev`** - Local development mode with hot reload
+- [x] **`crc status`** - Check run status and resource usage
+- [x] **Input schema validation** - Validate inputs before running
+- [x] **Better error messages** - Actionable hints for common issues
 
 ## v0.3.0 - Production Scraping at Scale ✅
 
@@ -46,6 +46,7 @@ Priority: Production-grade stability.
 
 ## v0.5.0 - Polish
 
+- [x] **One-click cloud deploy** - Deploy buttons for Railway, Render, DigitalOcean + VPS script with Caddy auto-HTTPS
 - [ ] **Actor versioning** - Deploy and rollback specific versions
 - [ ] **API key scopes** - Read-only vs full access keys
 - [ ] **Improved dashboard** - Better UX for those who prefer UI

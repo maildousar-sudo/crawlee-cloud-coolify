@@ -1,13 +1,22 @@
 /**
  * API Compatibility Tests
- * 
+ *
  * Tests for Apify SDK compatibility fixes:
  * 1. `name` query param support on POST endpoints
  * 2. `clientKey` validation on request queue updates
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
+
+// Mock authenticate middleware BEFORE importing routes
+vi.mock('../src/auth/middleware.js', () => ({
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+}));
+
 import { datasetsRoutes } from '../src/routes/datasets.js';
 import { keyValueStoresRoutes } from '../src/routes/key-value-stores.js';
 import { requestQueuesRoutes } from '../src/routes/request-queues.js';
@@ -61,16 +70,18 @@ describe('POST endpoints - name query param support', () => {
       // Mock: no existing dataset, then return created one
       mockQuery
         .mockResolvedValueOnce({ rows: [] }) // check existing
-        .mockResolvedValueOnce({ 
-          rows: [{ 
-            id: 'test-id', 
-            name: 'my-dataset',
-            user_id: null,
-            created_at: new Date(),
-            modified_at: new Date(),
-            accessed_at: new Date(),
-            item_count: 0
-          }] 
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'test-id',
+              name: 'my-dataset',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+              item_count: 0,
+            },
+          ],
         });
 
       const response = await app.inject({
@@ -84,16 +95,18 @@ describe('POST endpoints - name query param support', () => {
     });
 
     it('should return existing dataset if name exists', async () => {
-      mockQuery.mockResolvedValueOnce({ 
-        rows: [{ 
-          id: 'existing-id', 
-          name: 'existing-dataset',
-          user_id: null,
-          created_at: new Date(),
-          modified_at: new Date(),
-          accessed_at: new Date(),
-          item_count: 5
-        }] 
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'existing-id',
+            name: 'existing-dataset',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+            item_count: 5,
+          },
+        ],
       });
 
       const response = await app.inject({
@@ -109,18 +122,18 @@ describe('POST endpoints - name query param support', () => {
 
   describe('POST /v2/key-value-stores', () => {
     it('should accept name from query string', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ 
-          rows: [{ 
-            id: 'kv-id', 
+      mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'kv-id',
             name: 'my-store',
             user_id: null,
             created_at: new Date(),
             modified_at: new Date(),
             accessed_at: new Date(),
-          }] 
-        });
+          },
+        ],
+      });
 
       const response = await app.inject({
         method: 'POST',
@@ -135,11 +148,10 @@ describe('POST endpoints - name query param support', () => {
 
   describe('POST /v2/request-queues', () => {
     it('should accept name from query string', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ 
-          rows: [{ 
-            id: 'queue-id', 
+      mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'queue-id',
             name: 'my-queue',
             user_id: null,
             created_at: new Date(),
@@ -148,8 +160,9 @@ describe('POST endpoints - name query param support', () => {
             total_request_count: 0,
             handled_request_count: 0,
             pending_request_count: 0,
-          }] 
-        });
+          },
+        ],
+      });
 
       const response = await app.inject({
         method: 'POST',
@@ -182,25 +195,27 @@ describe('PUT /v2/request-queues/:queueId/requests/:requestId - clientKey valida
 
   it('should allow update when clientKey matches lock owner', async () => {
     const futureDate = new Date(Date.now() + 60000); // locked for 60 more seconds
-    
+
     mockQuery
-      .mockResolvedValueOnce({ 
-        rows: [{ 
-          id: 'req-1',
-          queue_id: 'queue-1',
-          unique_key: 'test-url',
-          url: 'https://example.com',
-          method: 'GET',
-          retry_count: 0,
-          no_retry: false,
-          error_messages: null,
-          headers: null,
-          user_data: null,
-          handled_at: null,
-          order_no: 1,
-          locked_until: futureDate,
-          locked_by: 'workerA',
-        }] 
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'req-1',
+            queue_id: 'queue-1',
+            unique_key: 'test-url',
+            url: 'https://example.com',
+            method: 'GET',
+            retry_count: 0,
+            no_retry: false,
+            error_messages: null,
+            headers: null,
+            user_data: null,
+            handled_at: null,
+            order_no: 1,
+            locked_until: futureDate,
+            locked_by: 'workerA',
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [] }); // UPDATE query
 
@@ -215,24 +230,26 @@ describe('PUT /v2/request-queues/:queueId/requests/:requestId - clientKey valida
 
   it('should reject update when clientKey does not match lock owner', async () => {
     const futureDate = new Date(Date.now() + 60000);
-    
-    mockQuery.mockResolvedValueOnce({ 
-      rows: [{ 
-        id: 'req-1',
-        queue_id: 'queue-1',
-        unique_key: 'test-url',
-        url: 'https://example.com',
-        method: 'GET',
-        retry_count: 0,
-        no_retry: false,
-        error_messages: null,
-        headers: null,
-        user_data: null,
-        handled_at: null,
-        order_no: 1,
-        locked_until: futureDate,
-        locked_by: 'workerA',
-      }] 
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'req-1',
+          queue_id: 'queue-1',
+          unique_key: 'test-url',
+          url: 'https://example.com',
+          method: 'GET',
+          retry_count: 0,
+          no_retry: false,
+          error_messages: null,
+          headers: null,
+          user_data: null,
+          handled_at: null,
+          order_no: 1,
+          locked_until: futureDate,
+          locked_by: 'workerA',
+        },
+      ],
     });
 
     const response = await app.inject({
@@ -248,23 +265,25 @@ describe('PUT /v2/request-queues/:queueId/requests/:requestId - clientKey valida
 
   it('should allow update when request is not locked', async () => {
     mockQuery
-      .mockResolvedValueOnce({ 
-        rows: [{ 
-          id: 'req-1',
-          queue_id: 'queue-1',
-          unique_key: 'test-url',
-          url: 'https://example.com',
-          method: 'GET',
-          retry_count: 0,
-          no_retry: false,
-          error_messages: null,
-          headers: null,
-          user_data: null,
-          handled_at: null,
-          order_no: 1,
-          locked_until: null, // not locked
-          locked_by: null,
-        }] 
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'req-1',
+            queue_id: 'queue-1',
+            unique_key: 'test-url',
+            url: 'https://example.com',
+            method: 'GET',
+            retry_count: 0,
+            no_retry: false,
+            error_messages: null,
+            headers: null,
+            user_data: null,
+            handled_at: null,
+            order_no: 1,
+            locked_until: null, // not locked
+            locked_by: null,
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [] });
 
@@ -279,25 +298,27 @@ describe('PUT /v2/request-queues/:queueId/requests/:requestId - clientKey valida
 
   it('should allow update when lock has expired', async () => {
     const pastDate = new Date(Date.now() - 60000); // expired 60 seconds ago
-    
+
     mockQuery
-      .mockResolvedValueOnce({ 
-        rows: [{ 
-          id: 'req-1',
-          queue_id: 'queue-1',
-          unique_key: 'test-url',
-          url: 'https://example.com',
-          method: 'GET',
-          retry_count: 0,
-          no_retry: false,
-          error_messages: null,
-          headers: null,
-          user_data: null,
-          handled_at: null,
-          order_no: 1,
-          locked_until: pastDate, // expired
-          locked_by: 'workerA',
-        }] 
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'req-1',
+            queue_id: 'queue-1',
+            unique_key: 'test-url',
+            url: 'https://example.com',
+            method: 'GET',
+            retry_count: 0,
+            no_retry: false,
+            error_messages: null,
+            headers: null,
+            user_data: null,
+            handled_at: null,
+            order_no: 1,
+            locked_until: pastDate, // expired
+            locked_by: 'workerA',
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [] });
 

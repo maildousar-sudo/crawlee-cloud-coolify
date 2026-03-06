@@ -1,6 +1,6 @@
 /**
  * Dataset routes - Apify-compatible endpoints.
- * 
+ *
  * Users call these endpoints via APIFY_API_BASE_URL.
  */
 
@@ -8,6 +8,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
 import { putDatasetItem, listDatasetItems } from '../storage/s3.js';
+import { authenticate } from '../auth/middleware.js';
+import { CreateDatasetSchema } from '../schemas/datasets.js';
 
 interface DatasetRow {
   id: string;
@@ -20,12 +22,17 @@ interface DatasetRow {
 }
 
 export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
-   * GET /v2/datasets - List datasets
+   * GET /v2/datasets - List datasets (user-scoped)
    */
-  fastify.get('/datasets', async (_request, _reply) => {
-    const result = await query<DatasetRow>('SELECT * FROM datasets ORDER BY created_at DESC LIMIT 100');
-    
+  fastify.get('/datasets', async (request, _reply) => {
+    const result = await query<DatasetRow>(
+      'SELECT * FROM datasets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+      [request.user!.id]
+    );
+
     return {
       data: {
         total: result.rows.length,
@@ -40,108 +47,122 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * POST /v2/datasets - Create or get dataset
    */
-  fastify.post<{ Body: { name?: string }; Querystring: { name?: string } }>('/datasets', async (request, reply) => {
-    const name = request.query.name || request.body?.name;
-    
-    if (name) {
-      // Try to get existing
-      const existing = await query<DatasetRow>(
-        'SELECT * FROM datasets WHERE name = $1',
-        [name]
-      );
-      if (existing.rows[0]) {
-        return { data: formatDataset(existing.rows[0]) };
+  fastify.post<{ Body: { name?: string }; Querystring: { name?: string } }>(
+    '/datasets',
+    async (request, reply) => {
+      const body = CreateDatasetSchema.parse(request.body || {});
+      const name = request.query.name || body.name;
+
+      if (name) {
+        // Try to get existing for this user
+        const existing = await query<DatasetRow>(
+          'SELECT * FROM datasets WHERE name = $1 AND user_id = $2',
+          [name, request.user!.id]
+        );
+        if (existing.rows[0]) {
+          return { data: formatDataset(existing.rows[0]) };
+        }
       }
+
+      // Create new with user ownership
+      const id = nanoid();
+      const result = await query<DatasetRow>(
+        `INSERT INTO datasets (id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+        [id, name || null, request.user!.id]
+      );
+
+      reply.status(201);
+      return { data: formatDataset(result.rows[0]!) };
     }
-    
-    // Create new
-    const id = nanoid();
-    const result = await query<DatasetRow>(
-      `INSERT INTO datasets (id, name) VALUES ($1, $2) RETURNING *`,
-      [id, name || null]
-    );
-    
-    reply.status(201);
-    return { data: formatDataset(result.rows[0]!) };
-  });
+  );
 
   /**
-   * GET /v2/datasets/:datasetId - Get dataset info
+   * GET /v2/datasets/:datasetId - Get dataset info (user-scoped)
    */
   fastify.get<{ Params: { datasetId: string } }>('/datasets/:datasetId', async (request, reply) => {
     const { datasetId } = request.params;
-    
+
     const result = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [datasetId, datasetId, request.user!.id]
     );
-    
+
     if (!result.rows[0]) {
       reply.status(404);
       return { error: { message: 'Dataset not found' } };
     }
-    
+
     // Update accessed_at
     await query('UPDATE datasets SET accessed_at = NOW() WHERE id = $1', [result.rows[0].id]);
-    
+
     return { data: formatDataset(result.rows[0]) };
   });
 
   /**
-   * DELETE /v2/datasets/:datasetId - Delete dataset
+   * DELETE /v2/datasets/:datasetId - Delete dataset (user-scoped)
    */
-  fastify.delete<{ Params: { datasetId: string } }>('/datasets/:datasetId', async (request, reply) => {
-    const { datasetId } = request.params;
-    
-    await query('DELETE FROM datasets WHERE id = $1 OR name = $2', [datasetId, datasetId]);
-    reply.status(204);
-  });
+  fastify.delete<{ Params: { datasetId: string } }>(
+    '/datasets/:datasetId',
+    async (request, reply) => {
+      const { datasetId } = request.params;
+
+      const result = await query(
+        'DELETE FROM datasets WHERE (id = $1 OR name = $2) AND user_id = $3 RETURNING id',
+        [datasetId, datasetId, request.user!.id]
+      );
+      if (result.rowCount === 0) {
+        reply.status(404);
+        return { error: { message: 'Dataset not found' } };
+      }
+      reply.status(204);
+    }
+  );
 
   /**
    * GET /v2/datasets/:datasetId/items - List items
    */
-  fastify.get<{ 
+  fastify.get<{
     Params: { datasetId: string };
     Querystring: { offset?: string; limit?: string; desc?: string };
   }>('/datasets/:datasetId/items', async (request, reply) => {
     const { datasetId } = request.params;
-    const offset = parseInt(request.query.offset || '0', 10);
-    const limit = parseInt(request.query.limit || '100', 10);
-    
-    // Get dataset to confirm it exists
+    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+
+    // Get dataset to confirm it exists and belongs to user
     const dataset = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [datasetId, datasetId, request.user!.id]
     );
-    
+
     if (!dataset.rows[0]) {
       reply.status(404);
       return { error: { message: 'Dataset not found' } };
     }
-    
+
     // Get items from S3
     const { items, total } = await listDatasetItems(dataset.rows[0].id, { offset, limit });
-    
+
     // Set pagination headers (Apify style)
     reply.header('x-apify-pagination-total', total);
     reply.header('x-apify-pagination-offset', offset);
     reply.header('x-apify-pagination-limit', limit);
-    
+
     return items;
   });
 
   /**
    * POST /v2/datasets/:datasetId/items - Push items
-   * 
+   *
    * This is the key endpoint for Actor.pushData()!
    */
-  fastify.post<{ 
+  fastify.post<{
     Params: { datasetId: string };
     Body: unknown;
   }>('/datasets/:datasetId/items', async (request, reply) => {
     const { datasetId } = request.params;
     let body = request.body;
-    
+
     // Handle Buffer body from catch-all content-type parser
     if (Buffer.isBuffer(body)) {
       const bufferContent = body.toString('utf-8');
@@ -152,36 +173,39 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
         body = { raw: bufferContent };
       }
     }
-    
-    // Get or create dataset
+
+    // Get or create dataset (user-scoped)
     let dataset = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [datasetId, datasetId, request.user!.id]
     );
-    
+
     if (!dataset.rows[0]) {
-      // Auto-create if "default" or specific ID
+      // Auto-create if "default" or specific ID, with user ownership
       const id = datasetId === 'default' ? nanoid() : datasetId;
       await query(
-        `INSERT INTO datasets (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [id, datasetId === 'default' ? null : datasetId]
+        `INSERT INTO datasets (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, datasetId === 'default' ? null : datasetId, request.user!.id]
       );
-      dataset = await query<DatasetRow>('SELECT * FROM datasets WHERE id = $1', [id]);
+      dataset = await query<DatasetRow>('SELECT * FROM datasets WHERE id = $1 AND user_id = $2', [
+        id,
+        request.user!.id,
+      ]);
     }
-    
+
     const ds = dataset.rows[0]!;
-    
+
     // Handle single item or array
     const items = Array.isArray(body) ? body : [body];
-    
+
     // Store each item in S3 in parallel
     // Apify batches are typically manageable size (e.g. 100-1000 items)
     // but we chunk them just in case to avoid file system/S3 limits
     const CHUNK_SIZE = 50;
-    
+
     // Calculate new total count first so we know IDs
     const startCount = ds.item_count;
-    
+
     // Process in chunks
     for (let i = 0; i < items.length; i += CHUNK_SIZE) {
       const chunk = items.slice(i, i + CHUNK_SIZE);
@@ -191,15 +215,15 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
       });
       await Promise.all(promises);
     }
-    
+
     const currentCount = startCount + items.length;
-    
+
     // Update count
-    await query(
-      'UPDATE datasets SET item_count = $1, modified_at = NOW() WHERE id = $2',
-      [currentCount, ds.id]
-    );
-    
+    await query('UPDATE datasets SET item_count = $1, modified_at = NOW() WHERE id = $2', [
+      currentCount,
+      ds.id,
+    ]);
+
     reply.status(201);
     return {};
   });

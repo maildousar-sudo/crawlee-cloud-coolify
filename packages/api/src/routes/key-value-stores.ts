@@ -5,7 +5,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
-import { putKVRecord, getKVRecord, deleteKVRecord, listKVKeys, kvRecordExists } from '../storage/s3.js';
+import { putKVRecord, getKVRecord, deleteKVRecord, listKVKeys } from '../storage/s3.js';
+import { authenticate } from '../auth/middleware.js';
+import { CreateKeyValueStoreSchema } from '../schemas/key-value-stores.js';
 
 interface KVStoreRow {
   id: string;
@@ -17,12 +19,17 @@ interface KVStoreRow {
 }
 
 export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
-   * GET /v2/key-value-stores - List stores
+   * GET /v2/key-value-stores - List stores (user-scoped)
    */
-  fastify.get('/key-value-stores', async () => {
-    const result = await query<KVStoreRow>('SELECT * FROM key_value_stores ORDER BY created_at DESC LIMIT 100');
-    
+  fastify.get('/key-value-stores', async (request) => {
+    const result = await query<KVStoreRow>(
+      'SELECT * FROM key_value_stores WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+      [request.user!.id]
+    );
+
     return {
       data: {
         total: result.rows.length,
@@ -37,58 +44,77 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * POST /v2/key-value-stores - Create or get store
    */
-  fastify.post<{ Body: { name?: string }; Querystring: { name?: string } }>('/key-value-stores', async (request, reply) => {
-    const name = request.query.name || request.body?.name;
-    
-    if (name) {
-      const existing = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE name = $1',
-        [name]
-      );
-      if (existing.rows[0]) {
-        return { data: formatStore(existing.rows[0]) };
+  fastify.post<{ Body: { name?: string }; Querystring: { name?: string } }>(
+    '/key-value-stores',
+    async (request, reply) => {
+      const body = CreateKeyValueStoreSchema.parse(request.body || {});
+      const name = request.query.name || body.name;
+
+      if (name) {
+        const existing = await query<KVStoreRow>(
+          'SELECT * FROM key_value_stores WHERE name = $1 AND user_id = $2',
+          [name, request.user!.id]
+        );
+        if (existing.rows[0]) {
+          return { data: formatStore(existing.rows[0]) };
+        }
       }
+
+      const id = nanoid();
+      const result = await query<KVStoreRow>(
+        `INSERT INTO key_value_stores (id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+        [id, name || null, request.user!.id]
+      );
+
+      reply.status(201);
+      return { data: formatStore(result.rows[0]!) };
     }
-    
-    const id = nanoid();
-    const result = await query<KVStoreRow>(
-      `INSERT INTO key_value_stores (id, name) VALUES ($1, $2) RETURNING *`,
-      [id, name || null]
-    );
-    
-    reply.status(201);
-    return { data: formatStore(result.rows[0]!) };
-  });
+  );
 
   /**
-   * GET /v2/key-value-stores/:storeId - Get store info
+   * GET /v2/key-value-stores/:storeId - Get store info (user-scoped)
    */
-  fastify.get<{ Params: { storeId: string } }>('/key-value-stores/:storeId', async (request, reply) => {
-    const { storeId } = request.params;
-    
-    const result = await query<KVStoreRow>(
-      'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-      [storeId, storeId]
-    );
-    
-    if (!result.rows[0]) {
-      reply.status(404);
-      return { error: { message: 'Key-value store not found' } };
+  fastify.get<{ Params: { storeId: string } }>(
+    '/key-value-stores/:storeId',
+    async (request, reply) => {
+      const { storeId } = request.params;
+
+      const result = await query<KVStoreRow>(
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
+      );
+
+      if (!result.rows[0]) {
+        reply.status(404);
+        return { error: { message: 'Key-value store not found' } };
+      }
+
+      await query('UPDATE key_value_stores SET accessed_at = NOW() WHERE id = $1', [
+        result.rows[0].id,
+      ]);
+
+      return { data: formatStore(result.rows[0]) };
     }
-    
-    await query('UPDATE key_value_stores SET accessed_at = NOW() WHERE id = $1', [result.rows[0].id]);
-    
-    return { data: formatStore(result.rows[0]) };
-  });
+  );
 
   /**
-   * DELETE /v2/key-value-stores/:storeId - Delete store
+   * DELETE /v2/key-value-stores/:storeId - Delete store (user-scoped)
    */
-  fastify.delete<{ Params: { storeId: string } }>('/key-value-stores/:storeId', async (request, reply) => {
-    const { storeId } = request.params;
-    await query('DELETE FROM key_value_stores WHERE id = $1 OR name = $2', [storeId, storeId]);
-    reply.status(204);
-  });
+  fastify.delete<{ Params: { storeId: string } }>(
+    '/key-value-stores/:storeId',
+    async (request, reply) => {
+      const { storeId } = request.params;
+      const result = await query(
+        'DELETE FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3 RETURNING id',
+        [storeId, storeId, request.user!.id]
+      );
+      if (result.rowCount === 0) {
+        reply.status(404);
+        return { error: { message: 'Key-value store not found' } };
+      }
+      reply.status(204);
+    }
+  );
 
   /**
    * GET /v2/key-value-stores/:storeId/keys - List keys
@@ -100,19 +126,19 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     const { storeId } = request.params;
     const limit = parseInt(request.query.limit || '100', 10);
     const { exclusiveStartKey } = request.query;
-    
+
     const store = await query<KVStoreRow>(
-      'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-      [storeId, storeId]
+      'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [storeId, storeId, request.user!.id]
     );
-    
+
     if (!store.rows[0]) {
       reply.status(404);
       return { error: { message: 'Key-value store not found' } };
     }
-    
+
     const result = await listKVKeys(store.rows[0].id, { limit, exclusiveStartKey });
-    
+
     return {
       data: {
         count: result.keys.length,
@@ -126,33 +152,33 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/key-value-stores/:storeId/records/:key - Get record
-   * 
+   *
    * This is used for Actor.getInput(), Actor.getValue(), etc.
    */
   fastify.get<{ Params: { storeId: string; key: string } }>(
     '/key-value-stores/:storeId/records/:key',
     async (request, reply) => {
       const { storeId, key } = request.params;
-      
-      // Get or auto-create store
-      let store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+
+      // Get store (user-scoped)
+      const store = await query<KVStoreRow>(
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
       );
-      
+
       if (!store.rows[0]) {
         reply.status(404);
         return { error: { message: 'Key-value store not found' } };
       }
-      
+
       const record = await getKVRecord(store.rows[0].id, key);
-      
+
       if (!record) {
         // Return 204 No Content for missing records (Apify SDK compatibility)
         reply.status(204);
         return;
       }
-      
+
       reply.header('content-type', record.contentType);
       return reply.send(record.value);
     }
@@ -160,7 +186,7 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * PUT /v2/key-value-stores/:storeId/records/:key - Set record
-   * 
+   *
    * This is used for Actor.setValue()
    */
   fastify.put<{ Params: { storeId: string; key: string } }>(
@@ -168,23 +194,26 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { storeId, key } = request.params;
       const contentType = request.headers['content-type'] ?? 'application/json';
-      
-      // Get or auto-create store
+
+      // Get or auto-create store (user-scoped)
       let store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
       );
-      
+
       if (!store.rows[0]) {
-        // Auto-create
+        // Auto-create with user ownership
         const id = storeId === 'default' ? nanoid() : storeId;
         await query(
-          `INSERT INTO key_value_stores (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [id, storeId === 'default' ? null : storeId]
+          `INSERT INTO key_value_stores (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [id, storeId === 'default' ? null : storeId, request.user!.id]
         );
-        store = await query<KVStoreRow>('SELECT * FROM key_value_stores WHERE id = $1', [id]);
+        store = await query<KVStoreRow>(
+          'SELECT * FROM key_value_stores WHERE id = $1 AND user_id = $2',
+          [id, request.user!.id]
+        );
       }
-      
+
       const body = request.body;
       // Handle different body types (string, Buffer, object)
       let data: string;
@@ -195,11 +224,13 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       } else {
         data = JSON.stringify(body);
       }
-      
+
       await putKVRecord(store.rows[0]!.id, key, data, contentType);
-      
-      await query('UPDATE key_value_stores SET modified_at = NOW() WHERE id = $1', [store.rows[0]!.id]);
-      
+
+      await query('UPDATE key_value_stores SET modified_at = NOW() WHERE id = $1', [
+        store.rows[0]!.id,
+      ]);
+
       reply.status(201);
       return {};
     }
@@ -212,17 +243,17 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     '/key-value-stores/:storeId/records/:key',
     async (request, reply) => {
       const { storeId, key } = request.params;
-      
+
       const store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
       );
-      
+
       if (!store.rows[0]) {
         reply.status(404);
         return { error: { message: 'Key-value store not found' } };
       }
-      
+
       await deleteKVRecord(store.rows[0].id, key);
       reply.status(204);
     }

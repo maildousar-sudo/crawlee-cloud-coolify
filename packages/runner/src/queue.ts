@@ -35,11 +35,14 @@ interface ActorRow {
   } | null;
 }
 
+const RUNNER_API_KEY_REDIS_KEY = 'runner:api-key';
+
 let pool: pg.Pool;
 let redis: Redis;
 let isProcessing = false;
 let activeRuns = 0;
 let shuttingDown = false;
+let runnerApiKey: string | null = null;
 
 export function stopProcessing(): void {
   shuttingDown = true;
@@ -58,6 +61,17 @@ export async function initJobQueue(): Promise<void> {
   });
 
   redis = new Redis(config.redisUrl);
+
+  // Fetch runner API key from Redis (created by API's setupAdminUser)
+  runnerApiKey = await redis.get(RUNNER_API_KEY_REDIS_KEY);
+  if (runnerApiKey) {
+    console.log('Runner API key loaded from Redis');
+  } else {
+    console.warn(
+      'WARNING: No runner API key found in Redis. Actor containers will fail to authenticate.'
+    );
+    console.warn('Make sure the API server has started and created the runner key.');
+  }
 
   // Subscribe to run notifications
   const subscriber = new Redis(config.redisUrl);
@@ -164,12 +178,19 @@ async function processRun(run: RunJob): Promise<void> {
       ? (JSON.parse(runtimeEnvVarsJson) as unknown as Record<string, string>)
       : {};
 
+    // Resolve token: prefer runner API key from Redis, fall back to config
+    const token = runnerApiKey ?? config.apiToken;
+    if (!runnerApiKey) {
+      // Try fetching again in case the API created it after we started
+      runnerApiKey = await redis.get(RUNNER_API_KEY_REDIS_KEY);
+    }
+
     // Build environment variables
     const baseEnv = buildActorEnv({
       runId: run.id,
       actorId: run.actor_id,
       apiBaseUrl: config.apiBaseUrl,
-      token: config.apiToken,
+      token: runnerApiKey ?? token,
       defaultDatasetId: run.default_dataset_id,
       defaultKeyValueStoreId: run.default_key_value_store_id,
       defaultRequestQueueId: run.default_request_queue_id,
@@ -328,6 +349,47 @@ async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
 }
 
 /**
+ * Check if a URL targets a private/internal network address.
+ * Blocks RFC 1918, link-local, loopback, and metadata endpoints.
+ */
+function isPrivateUrl(urlString: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return true; // Invalid URLs are blocked
+  }
+
+  const hostname = parsed.hostname;
+
+  // Block loopback
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return true;
+  }
+
+  // Block link-local / cloud metadata (169.254.x.x)
+  if (hostname.startsWith('169.254.')) {
+    return true;
+  }
+
+  // Block RFC 1918 private ranges
+  const parts = hostname.split('.').map(Number);
+  if (parts.length === 4 && parts.every((p) => !isNaN(p))) {
+    const [a, b] = parts as [number, number, number, number];
+    // 10.0.0.0/8
+    if (a === 10) return true;
+    // 172.16.0.0/12
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    // 192.168.0.0/16
+    if (a === 192 && b === 168) return true;
+    // 0.0.0.0
+    if (parts.every((p) => p === 0)) return true;
+  }
+
+  return false;
+}
+
+/**
  * Attempt a single webhook delivery.
  */
 async function attemptWebhookDelivery(
@@ -369,6 +431,18 @@ async function attemptWebhookDelivery(
     };
 
     console.log(`Delivering webhook ${webhook.id} to ${webhook.request_url}`);
+
+    if (isPrivateUrl(webhook.request_url)) {
+      await pool.query(
+        `UPDATE webhook_deliveries
+         SET status = 'FAILED', attempt_count = attempt_count + 1,
+             response_body = 'Webhook URL targets a private/internal network address',
+             finished_at = NOW(), next_retry_at = NULL
+         WHERE id = $1`,
+        [deliveryId]
+      );
+      return;
+    }
 
     const response = await fetch(webhook.request_url, {
       method: 'POST',

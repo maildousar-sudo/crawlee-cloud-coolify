@@ -3,7 +3,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
+
+// Mock authenticate middleware BEFORE importing routes
+vi.mock('../src/auth/middleware.js', () => ({
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+}));
+
 import { actorsRoutes } from '../src/routes/actors.js';
 
 const mockQuery = vi.fn();
@@ -129,8 +138,8 @@ describe('Actor Routes', () => {
 
   describe('PUT /v2/acts/:actorId', () => {
     it('should update actor', async () => {
-      mockQuery.mockResolvedValueOnce({ 
-        rows: [createActorRow({ title: 'New Title' })] 
+      mockQuery.mockResolvedValueOnce({
+        rows: [createActorRow({ title: 'New Title' })],
       });
 
       const response = await app.inject({
@@ -163,19 +172,21 @@ describe('Actor Routes', () => {
         .mockResolvedValueOnce({ rows: [] }) // dataset insert
         .mockResolvedValueOnce({ rows: [] }) // kv store insert
         .mockResolvedValueOnce({ rows: [] }) // queue insert
-        .mockResolvedValueOnce({ 
-          rows: [{ 
-            id: 'run-1', 
-            actor_id: 'actor-1', 
-            status: 'READY',
-            started_at: null,
-            default_dataset_id: 'ds-1',
-            default_key_value_store_id: 'kv-1',
-            default_request_queue_id: 'rq-1',
-            timeout_secs: 3600,
-            memory_mbytes: 1024,
-            created_at: new Date(),
-          }] 
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'run-1',
+              actor_id: 'actor-1',
+              status: 'READY',
+              started_at: null,
+              default_dataset_id: 'ds-1',
+              default_key_value_store_id: 'kv-1',
+              default_request_queue_id: 'rq-1',
+              timeout_secs: 3600,
+              memory_mbytes: 1024,
+              created_at: new Date(),
+            },
+          ],
         });
 
       mockRedisPublish.mockResolvedValueOnce(1);

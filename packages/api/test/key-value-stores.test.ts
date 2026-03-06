@@ -3,7 +3,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
+
+// Mock authenticate middleware BEFORE importing routes
+vi.mock('../src/auth/middleware.js', () => ({
+  authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+}));
+
 import { keyValueStoresRoutes } from '../src/routes/key-value-stores.js';
 
 const mockQuery = vi.fn();
@@ -48,7 +57,14 @@ describe('Key-Value Store Routes', () => {
     it('should list stores', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() },
+          {
+            id: 'kv-1',
+            name: 'store-1',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+          },
         ],
       });
 
@@ -67,7 +83,16 @@ describe('Key-Value Store Routes', () => {
     it('should get store by id', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+          rows: [
+            {
+              id: 'kv-1',
+              name: 'store-1',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -96,10 +121,22 @@ describe('Key-Value Store Routes', () => {
   describe('GET /v2/key-value-stores/:storeId/keys', () => {
     it('should list keys', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+        rows: [
+          {
+            id: 'kv-1',
+            name: 'store-1',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+          },
+        ],
       });
       mockListKVKeys.mockResolvedValueOnce({
-        keys: [{ key: 'INPUT', size: 100 }, { key: 'OUTPUT', size: 200 }],
+        keys: [
+          { key: 'INPUT', size: 100 },
+          { key: 'OUTPUT', size: 200 },
+        ],
         isTruncated: false,
       });
 
@@ -117,7 +154,16 @@ describe('Key-Value Store Routes', () => {
   describe('GET /v2/key-value-stores/:storeId/records/:key', () => {
     it('should get record', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+        rows: [
+          {
+            id: 'kv-1',
+            name: 'store-1',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+          },
+        ],
       });
       mockGetKVRecord.mockResolvedValueOnce({
         value: JSON.stringify({ startUrls: ['https://example.com'] }),
@@ -135,7 +181,16 @@ describe('Key-Value Store Routes', () => {
 
     it('should return 204 for missing record', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+        rows: [
+          {
+            id: 'kv-1',
+            name: 'store-1',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+          },
+        ],
       });
       mockGetKVRecord.mockResolvedValueOnce(null);
 
@@ -152,7 +207,16 @@ describe('Key-Value Store Routes', () => {
     it('should set record', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+          rows: [
+            {
+              id: 'kv-1',
+              name: 'store-1',
+              user_id: null,
+              created_at: new Date(),
+              modified_at: new Date(),
+              accessed_at: new Date(),
+            },
+          ],
         })
         .mockResolvedValueOnce({ rows: [] });
       mockPutKVRecord.mockResolvedValueOnce(undefined);
@@ -172,7 +236,16 @@ describe('Key-Value Store Routes', () => {
   describe('DELETE /v2/key-value-stores/:storeId/records/:key', () => {
     it('should delete record', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'kv-1', name: 'store-1', user_id: null, created_at: new Date(), modified_at: new Date(), accessed_at: new Date() }],
+        rows: [
+          {
+            id: 'kv-1',
+            name: 'store-1',
+            user_id: null,
+            created_at: new Date(),
+            modified_at: new Date(),
+            accessed_at: new Date(),
+          },
+        ],
       });
       mockDeleteKVRecord.mockResolvedValueOnce(undefined);
 

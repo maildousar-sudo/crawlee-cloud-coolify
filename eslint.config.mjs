@@ -11,7 +11,14 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["packages/*/test/*.ts", "scripts/*.ts"],
+          allowDefaultProject: [
+            "packages/*/test/*.ts",
+            "packages/*/test/integration/*.ts",
+            "scripts/*.ts",
+            "vitest.*.ts",
+            "packages/*/vitest.config.ts",
+          ],
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 20,
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -28,7 +35,10 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/unbound-method": "off",
     },
   },
   {

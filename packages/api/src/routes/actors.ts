@@ -169,16 +169,17 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     values.push(actorId);
+    const actorIdParam = paramIndex++;
+    values.push(request.user!.id);
+    const userIdParam = paramIndex++;
 
-    // Add user_id filter for authorization
-    const userIdParam = paramIndex + 1;
     const result = await query<ActorRow>(
       `
       UPDATE actors SET ${setClauses.join(', ')}
-      WHERE (id = $${paramIndex} OR name = $${paramIndex}) AND user_id = $${userIdParam}
+      WHERE (id = $${actorIdParam} OR name = $${actorIdParam}) AND user_id = $${userIdParam}
       RETURNING *
     `,
-      [...values, actorId, request.user!.id]
+      values
     );
 
     if (!result.rows[0]) {
