@@ -364,6 +364,62 @@ export function buildActorEnv(options: {
 }
 
 /**
+ * Clean up Docker resources to free disk space.
+ * Removes: stopped containers, dangling images, build cache.
+ * Keeps images used in the last 24h.
+ */
+export async function cleanupDocker(): Promise<void> {
+  try {
+    // Remove stopped containers
+    const containers = await docker.listContainers({
+      all: true,
+      filters: { status: ['exited', 'dead'] },
+    });
+    for (const c of containers) {
+      try {
+        await docker.getContainer(c.Id).remove();
+      } catch {
+        // ignore
+      }
+    }
+    if (containers.length > 0) {
+      console.log(`[Cleanup] Removed ${String(containers.length)} stopped container(s)`);
+    }
+
+    // Prune dangling images
+    const pruneResult = await docker.pruneImages({ filters: { dangling: { true: true } } });
+    const reclaimedMb = Math.round((pruneResult.SpaceReclaimed || 0) / 1024 / 1024);
+    if (reclaimedMb > 0) {
+      console.log(`[Cleanup] Pruned dangling images: ${String(reclaimedMb)}MB freed`);
+    }
+
+    // Prune build cache
+    await docker.pruneBuilder();
+  } catch (err) {
+    console.error('[Cleanup] Error:', (err as Error).message);
+  }
+}
+
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Start periodic Docker cleanup (every 30 minutes) */
+export function startPeriodicCleanup(): void {
+  const intervalMs = 30 * 60 * 1000;
+  console.log('[Cleanup] Starting periodic Docker cleanup (every 30m)');
+  cleanupInterval = setInterval(() => {
+    void cleanupDocker();
+  }, intervalMs);
+}
+
+/** Stop periodic cleanup */
+export function stopPeriodicCleanup(): void {
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
+  }
+}
+
+/**
  * Check Docker daemon connectivity.
  */
 export async function checkDocker(): Promise<boolean> {

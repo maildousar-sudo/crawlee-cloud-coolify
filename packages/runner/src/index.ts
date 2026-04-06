@@ -11,7 +11,13 @@
 import { Redis } from 'ioredis';
 import os from 'os';
 import { config } from './config.js';
-import { checkDocker, listRunningContainers } from './docker.js';
+import {
+  checkDocker,
+  listRunningContainers,
+  cleanupDocker,
+  startPeriodicCleanup,
+  stopPeriodicCleanup,
+} from './docker.js';
 import {
   initJobQueue,
   startProcessing,
@@ -47,6 +53,10 @@ async function main() {
     console.log(`Found ${String(running.length)} running Actor containers`);
   }
 
+  // Clean up stale Docker resources on startup
+  await cleanupDocker();
+  startPeriodicCleanup();
+
   // Initialize job queue
   console.log('Initializing job queue...');
   await initJobQueue();
@@ -77,6 +87,7 @@ function setupGracefulShutdown(): void {
 
     stopProcessing();
     stopHeartbeat();
+    stopPeriodicCleanup();
 
     const forceExit = setTimeout(() => {
       const active = getActiveRunCount();
