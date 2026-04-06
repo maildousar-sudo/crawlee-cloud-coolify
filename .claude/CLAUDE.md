@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Git Commits
+
+Do not add Co-Authored-By trailers to git commits.
+
 ## Overview
 
 Crawlee Cloud is a self-hosted, open-source platform for running Apify Actors on your own infrastructure. It provides an Apify-compatible API (v2) that allows existing Actor code to run without modifications by simply changing the `APIFY_API_BASE_URL` environment variable.
