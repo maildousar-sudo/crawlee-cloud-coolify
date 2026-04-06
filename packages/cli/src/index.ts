@@ -21,6 +21,7 @@ import { callCommand } from './commands/call.js';
 import { logsCommand } from './commands/logs.js';
 import { statusCommand } from './commands/status.js';
 import { loginCommand } from './commands/login.js';
+import { listCommand } from './commands/list.js';
 
 export const program = new Command();
 
@@ -38,6 +39,7 @@ program.addCommand(callCommand);
 program.addCommand(logsCommand);
 program.addCommand(statusCommand);
 program.addCommand(loginCommand);
+program.addCommand(listCommand);
 
 export { program as cli };
 
