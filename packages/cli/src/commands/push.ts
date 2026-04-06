@@ -2,6 +2,14 @@
  * `crawlee-cloud push` command
  *
  * Builds and pushes Actor to the platform.
+ *
+ * Supports multiple build strategies:
+ *   --local (default): build Docker image on the local machine
+ *   --remote <host>:   build on a remote runner via SSH
+ *   --ghcr <repo>:     build locally, push to GHCR, runners pull
+ *
+ * On push, the actor is created or updated (upsert) so modifiedAt
+ * always reflects the latest deployment.
  */
 
 import { Command } from 'commander';
@@ -47,6 +55,12 @@ export const pushCommand = new Command('push')
   .description('Push Actor to Crawlee Cloud')
   .option('-t, --tag <tag>', 'Docker image tag', 'latest')
   .option('--no-build', 'Skip Docker build')
+  .option('--platform <platform>', 'Docker build platform (e.g. linux/amd64)', '')
+  .option('--remote <user@host>', 'Build on a remote runner via SSH')
+  .option('--ssh-key <path>', 'SSH key for remote build')
+  .option('--ghcr <repo>', 'Push to GitHub Container Registry (e.g. org/repo)')
+  .option('--ghcr-user <user>', 'GHCR username (default: github)')
+  .option('--ghcr-token <token>', 'GHCR token (or set GHCR_TOKEN env var)')
   .action(async (options) => {
     console.log(chalk.bold('\n📤 Pushing Actor to Crawlee Cloud\n'));
 
@@ -57,9 +71,7 @@ export const pushCommand = new Command('push')
     const actorDir = path.join(cwd, '.actor');
     if (!(await fs.pathExists(actorDir))) {
       console.log(chalk.red('❌ No .actor directory found.'));
-      console.log(chalk.dim('\nTo create an Actor, run:'));
-      console.log(chalk.cyan('  npx apify-cli create my-actor'));
-      console.log(chalk.dim('\nOr create .actor/actor.json manually with:'));
+      console.log(chalk.dim('\nCreate .actor/actor.json with:'));
       console.log(
         chalk.dim(`  {
     "actorSpecification": 1,
@@ -74,14 +86,6 @@ export const pushCommand = new Command('push')
     const actorJsonPath = path.join(actorDir, 'actor.json');
     if (!(await fs.pathExists(actorJsonPath))) {
       console.log(chalk.red('❌ No .actor/actor.json found.'));
-      console.log(chalk.dim('\nCreate .actor/actor.json with at minimum:'));
-      console.log(
-        chalk.dim(`  {
-    "actorSpecification": 1,
-    "name": "my-actor",
-    "title": "My Actor"
-  }`)
-      );
       process.exit(1);
     }
 
@@ -95,7 +99,6 @@ export const pushCommand = new Command('push')
       process.exit(1);
     }
 
-    // Validate required fields
     const validationErrors = validateActorJson(actorJson);
     if (validationErrors.length > 0) {
       console.log(chalk.red('❌ Invalid .actor/actor.json:'));
@@ -104,12 +107,16 @@ export const pushCommand = new Command('push')
     }
 
     const actorName = actorJson.name!;
-    const imageName = `crawlee-cloud/actor-${actorName}:${options.tag}`;
+    const imageName = `crawlee-cloud/actor-${actorName}:${options.tag as string}`;
 
     console.log(chalk.dim(`Actor: ${actorName}`));
     if (actorJson.title) console.log(chalk.dim(`Title: ${actorJson.title}`));
     if (actorJson.version) console.log(chalk.dim(`Version: ${actorJson.version}`));
     console.log(chalk.dim(`Image: ${imageName}`));
+
+    // Determine build mode
+    const buildMode = options.ghcr ? 'ghcr' : options.remote ? 'remote' : 'local';
+    console.log(chalk.dim(`Build: ${buildMode}`));
     console.log();
 
     // Check Dockerfile exists
@@ -122,26 +129,22 @@ export const pushCommand = new Command('push')
       process.exit(1);
     }
 
-    // Build Docker image
+    // ---- Build image ----
     if (options.build !== false) {
-      const buildSpinner = ora('Building Docker image...').start();
-
-      try {
-        await runCommand('docker', ['build', '-t', imageName, '.'], cwd);
-        buildSpinner.succeed('Docker image built');
-      } catch (err) {
-        buildSpinner.fail('Docker build failed');
-        console.error(err);
-        process.exit(1);
+      if (buildMode === 'remote') {
+        await buildRemote(cwd, imageName, options);
+      } else if (buildMode === 'ghcr') {
+        await buildAndPushGhcr(cwd, imageName, actorName, options);
+      } else {
+        await buildLocal(cwd, imageName, options);
       }
     }
 
-    // Push to registry (if configured)
-    if (config.registryUrl) {
+    // ---- Push to registry (if configured in config, separate from GHCR) ----
+    if (config.registryUrl && buildMode === 'local') {
       const pushSpinner = ora('Pushing to registry...').start();
-
       try {
-        const remoteImage = `${config.registryUrl}/actor-${actorName}:${options.tag}`;
+        const remoteImage = `${config.registryUrl}/actor-${actorName}:${options.tag as string}`;
         await runCommand('docker', ['tag', imageName, remoteImage], cwd);
         await runCommand('docker', ['push', remoteImage], cwd);
         pushSpinner.succeed('Image pushed to registry');
@@ -152,37 +155,73 @@ export const pushCommand = new Command('push')
       }
     }
 
-    // Register with API
+    // ---- Register/update actor (upsert) ----
     const registerSpinner = ora('Registering with platform...').start();
 
     try {
-      const response = await fetch(`${config.apiBaseUrl}/v2/acts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.token}`,
-        },
-        body: JSON.stringify({
-          name: actorName,
-          title: actorJson.title,
-          description: actorJson.description,
-          defaultRunOptions: {
-            image: imageName,
-            envVars: actorJson.environmentVariables,
-          },
-        }),
+      // Check if actor exists
+      const listRes = await fetch(`${config.apiBaseUrl}/v2/acts?limit=200`, {
+        headers: { Authorization: `Bearer ${config.token}` },
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API error: ${response.status} - ${errorText}`);
+      let existingId: string | null = null;
+      if (listRes.ok) {
+        const listData = (await listRes.json()) as {
+          data: { items: { id: string; name: string }[] };
+        };
+        const existing = listData.data.items.find((a) => a.name === actorName);
+        if (existing) existingId = existing.id;
       }
 
-      registerSpinner.succeed('Registered with platform');
+      const actorPayload = {
+        name: actorName,
+        title: actorJson.title,
+        description: actorJson.description,
+        defaultRunOptions: {
+          image: imageName,
+          envVars: actorJson.environmentVariables,
+        },
+      };
+
+      if (existingId) {
+        // Update existing actor (refreshes modifiedAt)
+        const response = await fetch(`${config.apiBaseUrl}/v2/acts/${existingId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.token}`,
+          },
+          body: JSON.stringify(actorPayload),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`API error: ${String(response.status)} - ${errorText}`);
+        }
+
+        registerSpinner.succeed('Actor updated');
+      } else {
+        // Create new actor
+        const response = await fetch(`${config.apiBaseUrl}/v2/acts`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.token}`,
+          },
+          body: JSON.stringify(actorPayload),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`API error: ${String(response.status)} - ${errorText}`);
+        }
+
+        registerSpinner.succeed('Actor registered');
+      }
 
       console.log(chalk.green(`\n✅ Actor "${actorName}" pushed successfully!\n`));
-      console.log(chalk.dim(`Run with: npx crawlee-cloud call ${actorName}`));
-      console.log(chalk.dim(`Dashboard: http://localhost:3001/actors/${actorName}`));
+      console.log(chalk.dim(`Run with: crawlee-cloud call ${actorName}`));
+      console.log(chalk.dim(`List:     crawlee-cloud ls`));
       console.log();
     } catch (err) {
       registerSpinner.fail('Registration failed');
@@ -191,12 +230,130 @@ export const pushCommand = new Command('push')
     }
   });
 
+// ---- Build strategies ----
+
+async function buildLocal(
+  cwd: string,
+  imageName: string,
+  options: { platform?: string }
+): Promise<void> {
+  const buildSpinner = ora('Building Docker image...').start();
+  try {
+    const args = ['build', '-t', imageName];
+    if (options.platform) {
+      args.push('--platform', options.platform);
+    }
+    args.push('.');
+    await runCommand('docker', args, cwd);
+    buildSpinner.succeed('Docker image built');
+  } catch (err) {
+    buildSpinner.fail('Docker build failed');
+    console.error(err);
+    process.exit(1);
+  }
+}
+
+async function buildRemote(
+  cwd: string,
+  imageName: string,
+  options: { remote: string; sshKey?: string }
+): Promise<void> {
+  const buildSpinner = ora(`Building on ${options.remote}...`).start();
+
+  try {
+    const sshArgs = options.sshKey ? ['-i', options.sshKey] : [];
+    const remoteDir = `/tmp/crawlee-push-${Date.now()}`;
+
+    // Copy build context to remote
+    buildSpinner.text = 'Copying build context...';
+    await runCommand('scp', [...sshArgs, '-r', '-q', cwd, `${options.remote}:${remoteDir}`], cwd);
+
+    // Build on remote
+    buildSpinner.text = 'Building on remote...';
+    await runCommand(
+      'ssh',
+      [...sshArgs, options.remote, `cd ${remoteDir} && docker build -t ${imageName} .`],
+      cwd
+    );
+
+    // Cleanup remote
+    await runCommand('ssh', [...sshArgs, options.remote, `rm -rf ${remoteDir}`], cwd);
+
+    buildSpinner.succeed(`Built on ${options.remote}`);
+  } catch (err) {
+    buildSpinner.fail('Remote build failed');
+    console.error(err);
+    process.exit(1);
+  }
+}
+
+async function buildAndPushGhcr(
+  cwd: string,
+  _imageName: string,
+  actorName: string,
+  options: { ghcr: string; ghcrUser?: string; ghcrToken?: string; platform?: string; tag: string }
+): Promise<void> {
+  const ghcrToken = options.ghcrToken || process.env.GHCR_TOKEN || '';
+  const ghcrUser = options.ghcrUser || process.env.GHCR_USER || 'github';
+  const ghcrImage = `ghcr.io/${options.ghcr.toLowerCase()}/actor-${actorName}:${options.tag}`;
+
+  if (!ghcrToken) {
+    console.log(chalk.red('❌ GHCR token required. Set --ghcr-token or GHCR_TOKEN env var.'));
+    process.exit(1);
+  }
+
+  // Login to GHCR
+  const loginSpinner = ora('Logging in to GHCR...').start();
+  try {
+    await runCommandWithInput(
+      'docker',
+      ['login', 'ghcr.io', '-u', ghcrUser, '--password-stdin'],
+      ghcrToken,
+      cwd
+    );
+    loginSpinner.succeed('GHCR login OK');
+  } catch (err) {
+    loginSpinner.fail('GHCR login failed');
+    console.error(err);
+    process.exit(1);
+  }
+
+  // Build
+  const buildSpinner = ora('Building Docker image...').start();
+  try {
+    const args = ['build', '-t', ghcrImage];
+    if (options.platform) {
+      args.push('--platform', options.platform);
+    }
+    args.push('.');
+    await runCommand('docker', args, cwd);
+    buildSpinner.succeed('Docker image built');
+  } catch (err) {
+    buildSpinner.fail('Docker build failed');
+    console.error(err);
+    process.exit(1);
+  }
+
+  // Push
+  const pushSpinner = ora(`Pushing to ${ghcrImage}...`).start();
+  try {
+    await runCommand('docker', ['push', ghcrImage], cwd);
+    pushSpinner.succeed('Pushed to GHCR');
+  } catch (err) {
+    pushSpinner.fail('GHCR push failed');
+    console.error(err);
+    process.exit(1);
+  }
+}
+
+// ---- Helpers ----
+
 function runCommand(cmd: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, stdio: 'pipe' });
 
     let stderr = '';
-    child.stderr?.on('data', (data) => {
+    child.stderr?.on('data', (data: Buffer) => {
       stderr += data.toString();
     });
 
@@ -204,7 +361,34 @@ function runCommand(cmd: string, args: string[], cwd: string): Promise<void> {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(stderr || `Command failed with code ${code}`));
+        reject(new Error(stderr || `Command failed with code ${String(code)}`));
+      }
+    });
+  });
+}
+
+function runCommandWithInput(
+  cmd: string,
+  args: string[],
+  input: string,
+  cwd: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    let stderr = '';
+    child.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.stdin?.write(input);
+    child.stdin?.end();
+
+    child.on('exit', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr || `Command failed with code ${String(code)}`));
       }
     });
   });
