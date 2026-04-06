@@ -176,8 +176,19 @@ async function processRun(run: RunJob): Promise<void> {
     }
 
     const actor = actorResult.rows[0];
-    const image = actor.default_run_options?.image ?? `crawlee-cloud/actor-${actor.name}:latest`;
     const actorEnvVars = actor.default_run_options?.envVars ?? {};
+
+    // Resolve image: actor config → registry → local convention
+    let image: string;
+    if (actor.default_run_options?.image) {
+      image = actor.default_run_options.image;
+    } else if (config.imageRegistry) {
+      // Pull from configured registry (e.g. ghcr.io/org/repo/actor-name:latest)
+      image = `${config.imageRegistry}/${actor.name}:latest`;
+    } else {
+      // Local convention
+      image = `crawlee-cloud/actor-${actor.name}:latest`;
+    }
 
     // Fetch runtime env vars from Redis (set by CLI -e flag)
     const runtimeEnvVarsJson = await redis.get(`run:${run.id}:envVars`);

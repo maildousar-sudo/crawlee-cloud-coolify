@@ -243,32 +243,68 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
   };
 }
 
+/** Registry auth for docker pull */
+function getRegistryAuth():
+  | { authconfig?: { username: string; password: string; serveraddress: string } }
+  | undefined {
+  if (!config.imageRegistry || !config.imageRegistryToken) return undefined;
+  const serveraddress = config.imageRegistry.split('/')[0] || '';
+  return {
+    authconfig: {
+      username: config.imageRegistryUser || 'github',
+      password: config.imageRegistryToken,
+      serveraddress,
+    },
+  };
+}
+
 /**
  * Pull Docker image if not already present.
+ * When IMAGE_REGISTRY is configured, always pulls to get the latest version.
  */
 async function pullImageIfNeeded(image: string, runId: string): Promise<void> {
-  try {
-    await docker.getImage(image).inspect();
-    console.log(`Image ${image} already exists`);
-    const logEntry = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'INFO',
-      message: `Image ${image} already exists locally`,
-    });
-    await redis.rpush(`logs:${runId}`, logEntry);
-  } catch {
-    console.log(`Pulling image ${image}...`);
-    const pullStartLog = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'INFO',
-      message: `Pulling image ${image}...`,
-    });
-    await redis.rpush(`logs:${runId}`, pullStartLog);
+  const isRegistryImage = config.imageRegistry && image.includes(config.imageRegistry);
 
-    await new Promise<void>((resolve, reject) => {
-      void docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
+  // For local images, skip pull if already present
+  if (!isRegistryImage) {
+    try {
+      await docker.getImage(image).inspect();
+      console.log(`Image ${image} already exists`);
+      const logEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        message: `Image ${image} already exists locally`,
+      });
+      await redis.rpush(`logs:${runId}`, logEntry);
+      return;
+    } catch {
+      // Image not found locally — will try to pull
+    }
+  }
+
+  // Pull image (always pull for registry images to get latest)
+  console.log(`Pulling image ${image}...`);
+  const pullStartLog = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    message: `Pulling image ${image}...`,
+  });
+  await redis.rpush(`logs:${runId}`, pullStartLog);
+
+  const auth = getRegistryAuth();
+
+  await new Promise<void>((resolve, reject) => {
+    const pullOpts = auth || {};
+    void docker.pull(
+      image,
+      pullOpts,
+      (err: Error | null, stream: NodeJS.ReadableStream | undefined) => {
         if (err) {
           reject(err);
+          return;
+        }
+        if (!stream) {
+          reject(new Error('No stream returned from docker pull'));
           return;
         }
 
@@ -286,17 +322,17 @@ async function pullImageIfNeeded(image: string, runId: string): Promise<void> {
             resolve();
           }
         });
-      });
-    });
+      }
+    );
+  });
 
-    console.log(`Image ${image} pulled successfully`);
-    const pullDoneLog = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'INFO',
-      message: `Image ${image} pulled successfully`,
-    });
-    await redis.rpush(`logs:${runId}`, pullDoneLog);
-  }
+  console.log(`Image ${image} pulled successfully`);
+  const pullDoneLog = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    message: `Image ${image} pulled successfully`,
+  });
+  await redis.rpush(`logs:${runId}`, pullDoneLog);
 }
 
 /**
