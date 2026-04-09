@@ -15,7 +15,7 @@ services:
       - S3_REGION=us-east-1
       - S3_FORCE_PATH_STYLE=true
       - API_SECRET=${API_SECRET}
-      - CORS_ORIGINS=${SERVICE_URL_API_3000},${SERVICE_URL_DASHBOARD_3001}
+      - CORS_ORIGINS=https://crawlee-api.159.69.246.142.sslip.io,https://crawlee-dashboard.159.69.246.142.sslip.io
       - RATE_LIMIT_MAX=100
       - LOG_LEVEL=info
       - ADMIN_EMAIL=${ADMIN_EMAIL}
@@ -63,7 +63,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - NEXT_PUBLIC_API_URL=${SERVICE_URL_API_3000}
+      - NEXT_PUBLIC_API_URL=https://crawlee-api.159.69.246.142.sslip.io
     expose:
       - '3001'
     depends_on:
@@ -88,7 +88,7 @@ services:
       - S3_REGION=us-east-1
       - S3_FORCE_PATH_STYLE=true
       - API_SECRET=${API_SECRET}
-      - CORS_ORIGINS=${SERVICE_URL_API_3000},${SERVICE_URL_DASHBOARD_3001}
+      - CORS_ORIGINS=https://crawlee-api.159.69.246.142.sslip.io,https://crawlee-dashboard.159.69.246.142.sslip.io
     depends_on:
       - api
       - redis
